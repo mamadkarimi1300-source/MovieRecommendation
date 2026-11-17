@@ -71,6 +71,27 @@ st.markdown(
       div[data-testid="stProgress"] { direction: ltr; }
       [data-testid="stSidebar"] [data-testid="stRadio"] label { padding: .25rem 0; }
       .status-line { font-size: .88rem; opacity: .75; }
+      [data-testid="stAppViewContainer"] .main .block-container {
+        max-width: 1500px; padding-top: 1.5rem; padding-bottom: 3rem;
+      }
+      [data-testid="stSidebar"] { border-left: 1px solid rgba(128,128,128,.18); }
+      [data-testid="stSidebar"] .block-container { padding-top: 1.5rem; }
+      [data-testid="stRadio"] > div { gap: .45rem; }
+      [data-testid="stRadio"] label {
+        border: 1px solid rgba(128,128,128,.16); border-radius: 12px;
+        padding: .55rem .75rem; background: var(--secondary-background-color);
+      }
+      [data-testid="stMetric"] { min-height: 112px; display: flex; flex-direction: column; justify-content: center; }
+      [data-testid="stMetricValue"] { font-weight: 800; letter-spacing: -.03em; }
+      [data-testid="stDataFrame"], [data-testid="stTable"] {
+        border: 1px solid rgba(128,128,128,.16); border-radius: 13px; overflow: hidden;
+      }
+      [data-testid="stTabs"] button { font-weight: 700; }
+      .page-heading { display:flex; align-items:center; justify-content:space-between; gap:1rem; margin:.25rem 0 1rem; }
+      .page-heading small { opacity:.62; font-weight:700; letter-spacing:.08em; }
+      .chart-heading { font-size:1.02rem; font-weight:800; margin:.4rem 0 .2rem; }
+      .muted { opacity:.68; font-size:.88rem; }
+      .brand { box-shadow: 0 12px 32px rgba(15,23,42,.12); }
     </style>
     """,
     unsafe_allow_html=True,
@@ -150,6 +171,7 @@ with st.sidebar:
     page = st.radio(
         "بخش موردنظر",
         ["پیشنهاددهنده", "شبیه‌سازی", "آزمایشگاه"],
+        horizontal=False,
         format_func=lambda x: {
             "پیشنهاددهنده": "🎬  پیشنهاددهنده",
             "شبیه‌سازی": "🧪  شبیه‌سازی کاربران",
@@ -245,6 +267,13 @@ def render_recommender():
                 f"{summary['ratings']:,} امتیاز کل · {summary['train_count']:,} آموزش · "
                 f"{summary['test_count']:,} آزمون"
             )
+            st.markdown('<div class="chart-heading">ترکیب داده‌های آموزش و آزمون</div>', unsafe_allow_html=True)
+            split_frame = pd.DataFrame(
+                {"تعداد رکورد": [summary["train_count"], summary["test_count"]]},
+                index=["آموزش", "آزمون"],
+            )
+            st.bar_chart(split_frame, use_container_width=True)
+            st.markdown('<div class="muted">این نمودار اندازه واقعی دو بخش داده را پس از آخرین آموزش نشان می‌دهد.</div>', unsafe_allow_html=True)
 
     with user_tab:
         model = st.session_state.model
@@ -279,6 +308,10 @@ def render_recommender():
         h1.metric("فیلم‌های شناخته‌شده", f"{len(history):,}")
         h2.metric("میانگین امتیاز", f"{history.mean():.2f} از ۵")
         h3.metric("فیلم‌های کاندید", f"{len(model.predicted_ratings.columns) - len(history):,}")
+
+        st.markdown('<div class="chart-heading">توزیع امتیازهای ثبت‌شده کاربر</div>', unsafe_allow_html=True)
+        rating_distribution = history.value_counts().sort_index().rename_axis("امتیاز").to_frame("تعداد فیلم")
+        st.bar_chart(rating_distribution, use_container_width=True)
 
         left, right = st.columns(2)
         with left:
@@ -421,12 +454,28 @@ def render_simulation():
     users = st.session_state.get("simulation_users", [])
     if users:
         st.divider()
-        st.subheader("جمعیت تولیدشده")
-        st.dataframe(pd.DataFrame(users), hide_index=True, use_container_width=True)
+        st.subheader("نمای تحلیلی جمعیت")
+        user_frame = pd.DataFrame(users)
+        behavior_counts = user_frame["behavior_type"].value_counts().rename_axis("الگوی رفتاری").to_frame("تعداد کاربران")
+        left_chart, right_chart = st.columns(2)
+        with left_chart:
+            st.markdown('<div class="chart-heading">ترکیب الگوهای رفتاری</div>', unsafe_allow_html=True)
+            st.bar_chart(behavior_counts, use_container_width=True)
+        with right_chart:
+            st.markdown('<div class="chart-heading">سطح فعالیت کاربران</div>', unsafe_allow_html=True)
+            st.bar_chart(user_frame.set_index("user_id")[["activity_level", "exploration_rate"]], use_container_width=True)
+        st.subheader("مشخصات کاربران تولیدشده")
+        st.dataframe(user_frame, hide_index=True, use_container_width=True)
         events = st.session_state.get("simulation_events", [])
         st.subheader("آخرین رویدادهای تولیدشده")
         if events:
-            st.dataframe(pd.DataFrame(events).tail(100), hide_index=True, use_container_width=True)
+            event_frame = pd.DataFrame(events)
+            if "event_type" in event_frame.columns:
+                event_counts = event_frame["event_type"].value_counts().rename_axis("نوع رویداد").to_frame("تعداد")
+                st.markdown('<div class="chart-heading">توزیع رویدادهای تولیدشده</div>', unsafe_allow_html=True)
+                st.bar_chart(event_counts, use_container_width=True)
+            st.markdown('<div class="chart-heading">جریان آخرین رویدادها</div>', unsafe_allow_html=True)
+            st.dataframe(event_frame.tail(100), hide_index=True, use_container_width=True)
             st.download_button(
                 "دریافت رویدادهای این اجرا (JSON)",
                 json.dumps(events, ensure_ascii=False, indent=2),
@@ -456,8 +505,17 @@ def render_laboratory():
 
     st.caption("معیارها به روش Prequential محاسبه می‌شوند: هر امتیاز ابتدا پیش‌بینی و ارزیابی می‌شود و سپس وارد آموزش مدل می‌شود.")
     if metrics["event_counts"]:
-        st.subheader("ترکیب رویدادهای دریافت‌شده")
-        st.bar_chart(pd.Series(metrics["event_counts"], name="تعداد رویداد"))
+        st.subheader("تحلیل رویدادهای دریافت‌شده")
+        event_chart = pd.Series(metrics["event_counts"], name="تعداد رویداد").sort_values(ascending=False)
+        st.bar_chart(event_chart, use_container_width=True)
+    lab_events = st.session_state.get("simulation_events", [])
+    if lab_events:
+        lab_frame = pd.DataFrame(lab_events)
+        if "rating" in lab_frame.columns:
+            ratings_frame = pd.to_numeric(lab_frame["rating"], errors="coerce").dropna()
+            if not ratings_frame.empty:
+                st.markdown('<div class="chart-heading">توزیع امتیازهای مصنوعی</div>', unsafe_allow_html=True)
+                st.bar_chart(ratings_frame.value_counts().sort_index().rename_axis("امتیاز").to_frame("تعداد"), use_container_width=True)
 
     if st.button("ثبت نتیجه آزمایش", disabled=metrics["processed_events"] == 0):
         try:
@@ -483,7 +541,14 @@ def render_laboratory():
                 "RMSE": result.get("rmse"),
                 "MAE": result.get("mae"),
             })
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        history_frame = pd.DataFrame(rows)
+        st.dataframe(history_frame, hide_index=True, use_container_width=True)
+        chart_frame = history_frame.copy()
+        for metric_name in ["RMSE", "MAE"]:
+            chart_frame[metric_name] = pd.to_numeric(chart_frame[metric_name], errors="coerce")
+        if chart_frame[["RMSE", "MAE"]].notna().any().any():
+            st.markdown('<div class="chart-heading">مقایسه خطای آزمایش‌ها</div>', unsafe_allow_html=True)
+            st.line_chart(chart_frame.set_index("شناسه آزمایش")[["RMSE", "MAE"]], use_container_width=True)
     else:
         st.info("هنوز نتیجه‌ای ذخیره نشده است. پس از اجرای Simulation می‌توانید نتیجه را ثبت کنید.")
 
