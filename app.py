@@ -11,6 +11,10 @@ import streamlit as st
 from data.dataset import load_ratings
 from recommender.model import MovieRecommender, split_ratings
 from recommender.recommend import recommend_movies
+from simulation.config import SimulationConfig
+from simulation.engine import SimulationEngine
+from laboratory.engine import LaboratoryEngine
+from laboratory.experiments.store import ExperimentStore
 
 ARTIFACTS = Path("artifacts")
 MODEL_PATH = ARTIFACTS / "movie_recommender.joblib"
@@ -348,70 +352,146 @@ def render_recommender():
             )
 
 
+def get_laboratory_engine():
+    if "laboratory_engine" not in st.session_state:
+        st.session_state.laboratory_engine = LaboratoryEngine()
+    return st.session_state.laboratory_engine
+
+
 def render_simulation():
     st.markdown('<div class="section-kicker">USER BEHAVIOR ENVIRONMENT</div>', unsafe_allow_html=True)
     st.title("شبیه‌سازی کاربران")
-    st.caption("محیط طراحی و اجرای رفتار کاربران مصنوعی و ارسال تعاملات به آزمایشگاه.")
+    st.caption("تولید کاربران مصنوعی، ساخت تعاملات و ارسال مستقیم رویدادها به آزمایشگاه.")
 
+    engine = get_laboratory_engine()
+    metrics = engine.metrics()
     c1, c2, c3 = st.columns(3)
-    c1.metric("نوع آزمایش", "Both")
-    c2.metric("تعداد کاربران", "۵۰")
-    c3.metric("اتصال به آزمایشگاه", "Connected")
+    c1.metric("کاربران شبیه‌سازی", "۵۰")
+    c2.metric("رویدادهای پردازش‌شده", f"{metrics['processed_events']:,}")
+    c3.metric("اتصال آزمایشگاه", "متصل")
 
     st.subheader("پیکربندی شبیه‌سازی")
-    left, right = st.columns(2)
-    with left:
-        st.markdown('<div class="panel"><div class="panel-title">۱. شبیه‌سازی رفتار کاربران</div><div class="panel-copy">ساخت کاربران مصنوعی و تولید رفتارهایی مانند مشاهده، امتیازدهی و انتخاب فیلم.</div></div>', unsafe_allow_html=True)
-        st.selectbox("الگوی رفتار کاربران", ["ترکیبی از رفتارها", "علاقه‌مند به ژانرهای خاص", "تصادفی"], disabled=True)
-    with right:
-        st.markdown('<div class="panel"><div class="panel-title">۲. آزمایش تعامل با پیشنهاددهنده</div><div class="panel-copy">بررسی واکنش کاربران مصنوعی به پیشنهادهای موتور توصیه‌گر.</div></div>', unsafe_allow_html=True)
-        st.selectbox("موتور مقصد", ["Recommender فعلی (SVD)"], disabled=True)
+    interactions_per_user = st.slider("تعداد تعامل هر کاربر", 1, 20, 5)
+    st.caption("الگوی کاربران ترکیبی است: مشاهده‌گر فعال، امتیازدهنده، کاوشگر و کاربر با ترجیحات متغیر.")
+    st.caption("امتیازها مصنوعی و بر اساس ترجیحات نهفته تولید می‌شوند؛ این داده‌ها امتیاز واقعی MovieLens نیستند.")
 
-    st.divider()
-    st.subheader("جریان رویدادهای شبیه‌سازی")
-    st.info(
-        "ساختار رابط و تنظیمات اولیه مشخص شده‌اند؛ اما موتور تولید کاربر و رویداد هنوز در مخزن پیاده‌سازی نشده است. "
-        "برای جلوگیری از نمایش داده ساختگی، اجرای شبیه‌سازی تا اتصال موتور واقعی غیرفعال است."
-    )
-    st.button("شروع شبیه‌سازی ۵۰ کاربر", type="primary", use_container_width=True, disabled=True)
-    st.markdown("**رویدادهای زنده**")
-    st.empty()
-    st.caption("پس از پیاده‌سازی Simulation Engine، رویدادها و شمارنده‌های واقعی در این قسمت نمایش داده می‌شوند.")
+    if st.button("شروع شبیه‌سازی ۵۰ کاربر", type="primary", use_container_width=True):
+        try:
+            with st.spinner("در حال تولید کاربران و انتقال رویدادها به آزمایشگاه..."):
+                ratings = get_ratings()
+                catalog = sorted(ratings["movie_title"].dropna().astype(str).unique().tolist())
+                recommendation_titles = []
+                active_model = st.session_state.model
+                if active_model is not None and active_model.predicted_ratings is not None:
+                    recommendation_titles = (
+                        active_model.predicted_ratings.mean(axis=0)
+                        .nlargest(30).index.astype(str).tolist()
+                    )
+                config = SimulationConfig(
+                    user_count=50,
+                    interactions_per_user=interactions_per_user,
+                    random_seed=42,
+                    include_recommendation_events=True,
+                )
+                simulation = SimulationEngine(config)
+                events = simulation.run_batch(catalog, recommendation_titles)
+                for event in events:
+                    engine.consume(event)
+                st.session_state.simulation_users = [
+                    {
+                        "user_id": user.user_id,
+                        "behavior_type": user.behavior_type,
+                        "activity_level": user.activity_level,
+                        "exploration_rate": user.exploration_rate,
+                    }
+                    for user in simulation.users
+                ]
+                st.session_state.simulation_events = [event.to_dict() for event in events]
+                st.session_state.last_simulation_config = {
+                    "user_count": config.user_count,
+                    "interactions_per_user": config.interactions_per_user,
+                    "learning_method": "incremental",
+                    "recommendation_events": bool(recommendation_titles),
+                }
+                st.success(f"شبیه‌سازی تمام شد؛ {len(simulation.users)} کاربر و {len(events):,} رویداد تولید و پردازش شد.")
+                st.rerun()
+        except Exception as exc:
+            st.error(f"اجرای شبیه‌سازی ناموفق بود: {exc}")
+
+    users = st.session_state.get("simulation_users", [])
+    if users:
+        st.divider()
+        st.subheader("جمعیت تولیدشده")
+        st.dataframe(pd.DataFrame(users), hide_index=True, use_container_width=True)
+        events = st.session_state.get("simulation_events", [])
+        st.subheader("آخرین رویدادهای تولیدشده")
+        if events:
+            st.dataframe(pd.DataFrame(events).tail(100), hide_index=True, use_container_width=True)
+            st.download_button(
+                "دریافت رویدادهای این اجرا (JSON)",
+                json.dumps(events, ensure_ascii=False, indent=2),
+                "simulation_events.json",
+                "application/json",
+            )
+    else:
+        st.info("هنوز شبیه‌سازی اجرا نشده است. با شروع آزمایش، کاربران و رویدادهای واقعیِ تولیدشده در همین صفحه نمایش داده می‌شوند.")
 
 
 def render_laboratory():
     st.markdown('<div class="section-kicker">MODEL LEARNING & EXPERIMENTS</div>', unsafe_allow_html=True)
     st.title("آزمایشگاه یادگیری")
-    st.caption("مدیریت آزمایش‌ها، یادگیری تدریجی و مشاهده کیفیت مدل در طول ورود تعاملات.")
+    st.caption("دریافت رویدادهای Simulation، پیش‌بینی قبل از آموزش و به‌روزرسانی تدریجی مدل.")
 
+    engine = get_laboratory_engine()
+    metrics = engine.metrics()
     a, b, c = st.columns(3)
     a.metric("روش یادگیری", "Incremental")
-    b.metric("منبع تعامل", "Simulation")
-    c.metric("وضعیت اتصال", "در انتظار موتور")
+    b.metric("رویدادهای دریافتی", f"{metrics['processed_events']:,}")
+    c.metric("به‌روزرسانی مدل", f"{metrics['model_updates']:,}")
 
-    st.subheader("تنظیمات آزمایش")
-    x, y = st.columns(2)
-    with x:
-        st.selectbox("روش به‌روزرسانی مدل", ["یادگیری تدریجی (Incremental)"], disabled=True)
-        st.selectbox("منبع داده", ["تعاملات شبیه‌سازی کاربران"], disabled=True)
-    with y:
-        st.number_input("تعداد کاربران شبیه‌سازی", min_value=1, max_value=500, value=50, disabled=True)
-        st.selectbox("معیار ارزیابی", ["RMSE و MAE"], disabled=True)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("RMSE پیش‌رونده", f"{metrics['rmse']:.4f}" if metrics["rmse"] is not None else "—")
+    m2.metric("MAE پیش‌رونده", f"{metrics['mae']:.4f}" if metrics["mae"] is not None else "—")
+    m3.metric("امتیازهای ارزیابی‌شده", f"{metrics['rating_count']:,}")
+
+    st.caption("معیارها به روش Prequential محاسبه می‌شوند: هر امتیاز ابتدا پیش‌بینی و ارزیابی می‌شود و سپس وارد آموزش مدل می‌شود.")
+    if metrics["event_counts"]:
+        st.subheader("ترکیب رویدادهای دریافت‌شده")
+        st.bar_chart(pd.Series(metrics["event_counts"], name="تعداد رویداد"))
+
+    if st.button("ثبت نتیجه آزمایش", disabled=metrics["processed_events"] == 0):
+        try:
+            config = st.session_state.get("last_simulation_config", {"learning_method": "incremental"})
+            record = ExperimentStore().save(config, metrics)
+            st.success(f"نتیجه آزمایش {record['experiment_id']} ذخیره شد.")
+        except OSError as exc:
+            st.error(f"ذخیره نتیجه آزمایش انجام نشد: {exc}")
 
     st.divider()
-    st.subheader("پایش یادگیری")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("تعامل دریافت‌شده", "—")
-    m2.metric("به‌روزرسانی مدل", "—")
-    m3.metric("RMSE جاری", "—")
-    m4.metric("MAE جاری", "—")
-    st.info(
-        "این بخش فعلاً پوسته رابط کاربری است. مدل Incremental، صف دریافت تعاملات و ثبت معیارهای زنده هنوز "
-        "پیاده‌سازی نشده‌اند؛ بنابراین هیچ عدد یا نمودار آزمایشیِ ساختگی نمایش داده نمی‌شود."
-    )
-    st.button("ایجاد آزمایش یادگیری زنده", type="primary", use_container_width=True, disabled=True)
-    st.markdown("**تاریخچه آزمایش‌ها**")
-    st.caption("پس از ایجاد موتور آزمایش، وضعیت اجرا، زمان، تعداد تعاملات و معیارهای هر آزمایش در این جدول ثبت خواهد شد.")
+    st.subheader("تاریخچه آزمایش‌ها")
+    history = ExperimentStore().list()
+    if history:
+        rows = []
+        for item in history:
+            result = item.get("metrics", {})
+            rows.append({
+                "شناسه آزمایش": item.get("experiment_id"),
+                "زمان": item.get("created_at"),
+                "وضعیت": item.get("status"),
+                "رویدادها": result.get("processed_events", 0),
+                "به‌روزرسانی": result.get("model_updates", 0),
+                "RMSE": result.get("rmse"),
+                "MAE": result.get("mae"),
+            })
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    else:
+        st.info("هنوز نتیجه‌ای ذخیره نشده است. پس از اجرای Simulation می‌توانید نتیجه را ثبت کنید.")
+
+    if st.button("بازنشانی وضعیت یادگیری این نشست", type="secondary"):
+        st.session_state.laboratory_engine = LaboratoryEngine()
+        st.session_state.simulation_users = []
+        st.session_state.simulation_events = []
+        st.rerun()
 
 
 if page == "پیشنهاددهنده":
