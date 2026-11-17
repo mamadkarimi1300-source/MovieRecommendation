@@ -1,6 +1,5 @@
-"""Detailed Persian RTL Streamlit dashboard for MovieRecommendation."""
+"""Simple Persian RTL demo UI: train once, then test personalization for one user."""
 
-from datetime import datetime
 import json
 from pathlib import Path
 from time import perf_counter
@@ -15,14 +14,15 @@ from recommender.recommend import recommend_movies
 
 ARTIFACTS = Path("artifacts")
 MODEL_PATH = ARTIFACTS / "movie_recommender.joblib"
-REPORT_PATH = ARTIFACTS / "training_report.json"
-EVALUATION_PATH = ARTIFACTS / "evaluation_predictions.csv"
+TEST_PATH = ARTIFACTS / "test_ratings.csv"
+SUMMARY_PATH = ARTIFACTS / "training_summary.json"
+N_COMPONENTS = 20
 
 st.set_page_config(
-    page_title="MovieMind AI | سامانه پیشنهاد فیلم",
+    page_title="MovieMind AI",
     page_icon="🎬",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="collapsed",
 )
 
 st.markdown(
@@ -32,28 +32,27 @@ st.markdown(
       html, body, [class*="css"], [data-testid="stAppViewContainer"] {
         font-family: 'Vazirmatn', sans-serif;
       }
-      .stApp, [data-testid="stSidebar"], [data-testid="stMain"] { direction: rtl; }
+      .stApp, [data-testid="stMain"] { direction: rtl; }
       [data-testid="stMetricLabel"], [data-testid="stMetricValue"] { text-align: right; }
       [data-testid="stMetric"] {
         background: var(--secondary-background-color);
-        padding: 1rem 1.1rem;
         border: 1px solid rgba(128,128,128,.16);
-        border-radius: 16px;
+        border-radius: 14px;
+        padding: .8rem 1rem;
       }
       .hero {
-        padding: 1.8rem 2rem; border-radius: 22px;
+        padding: 1.5rem 1.8rem;
+        border-radius: 20px;
         background: linear-gradient(120deg, #111827 0%, #1e3a5f 65%, #164e63 100%);
-        color: #f8fafc; margin-bottom: 1.2rem;
+        color: #f8fafc;
+        margin-bottom: 1rem;
       }
-      .hero h1 { color: #fff; font-size: 2rem; margin: 0 0 .5rem 0; }
-      .hero p { color: #cbd5e1; margin: 0; font-size: 1rem; }
-      .eyebrow { color: #67e8f9; font-size: .8rem; font-weight: 700; }
-      .section-note { color: #94a3b8; font-size: .9rem; }
-      .info-panel {
-        border: 1px solid rgba(128,128,128,.2); border-radius: 15px;
-        padding: 1rem 1.2rem; background: var(--secondary-background-color);
+      .hero h1 { color: white; margin: 0 0 .35rem 0; font-size: 1.9rem; }
+      .hero p { color: #cbd5e1; margin: 0; }
+      .stButton button, .stDownloadButton button {
+        border-radius: 10px;
+        min-height: 2.7rem;
       }
-      .stButton button, .stDownloadButton button { border-radius: 11px; min-height: 2.7rem; }
       div[data-testid="stProgress"] { direction: ltr; }
     </style>
     """,
@@ -66,441 +65,308 @@ def get_ratings():
     return load_ratings()
 
 
-def make_evaluation_details(trained_model, test_data):
-    """Build per-rating predictions using the same fallback as model.evaluate."""
-    actual = test_data["user_rating"].astype(float).to_numpy()
-    predicted = []
-    sources = []
-    for row in test_data.itertuples(index=False):
-        user_id = str(row.user_id)
-        title = row.movie_title
-        if (
-            user_id in trained_model.predicted_ratings.index
-            and title in trained_model.predicted_ratings.columns
-        ):
-            predicted.append(float(trained_model.predicted_ratings.loc[user_id, title]))
-            sources.append("SVD reconstruction")
-        else:
-            predicted.append(float(trained_model.global_mean))
-            sources.append("Training global mean (fallback)")
-
-    details = test_data.reset_index(drop=True).copy()
-    details["actual_rating"] = actual
-    details["predicted_rating"] = predicted
-    details["absolute_error"] = np.abs(actual - np.asarray(predicted))
-    details["prediction_source"] = sources
-    details["error"] = actual - np.asarray(predicted)
-    return details
-
-
-def build_report(ratings, train_data, test_data, trained_model, metrics, elapsed):
-    matrix = trained_model.user_item
-    total_cells = int(matrix.shape[0] * matrix.shape[1])
-    observed_cells = int(matrix.notna().sum().sum())
-    explained = getattr(trained_model.model, "explained_variance_ratio_", np.array([]))
-    details = make_evaluation_details(trained_model, test_data)
-    cold_users = int((~test_data["user_id"].astype(str).isin(matrix.index)).sum())
-    cold_movies = int((~test_data["movie_title"].isin(matrix.columns)).sum())
-    return {
-        "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "dataset": {
-            "ratings": int(len(ratings)),
-            "users": int(ratings["user_id"].nunique()),
-            "movies": int(ratings["movie_title"].nunique()),
-            "rating_min": float(ratings["user_rating"].min()),
-            "rating_max": float(ratings["user_rating"].max()),
-            "rating_mean": float(ratings["user_rating"].mean()),
-        },
-        "split": {
-            "train_ratings": int(len(train_data)),
-            "test_ratings": int(len(test_data)),
-            "train_ratio": len(train_data) / len(ratings),
-            "test_ratio": len(test_data) / len(ratings),
-            "random_state": 42,
-        },
-        "model": {
-            "algorithm": "TruncatedSVD collaborative filtering",
-            "requested_components": int(trained_model.n_components),
-            "used_components": int(trained_model.model.n_components),
-            "matrix_users": int(matrix.shape[0]),
-            "matrix_movies": int(matrix.shape[1]),
-            "matrix_density": observed_cells / total_cells if total_cells else 0.0,
-            "global_mean": float(trained_model.global_mean),
-            "explained_variance_ratio_sum": float(explained.sum()) if len(explained) else None,
-            "fill_strategy": "Per-user mean for missing user-item ratings",
-        },
-        "evaluation": {
-            "rmse": float(metrics["rmse"]),
-            "mae": float(metrics["mae"]),
-            "test_count": int(metrics["test_count"]),
-            "fallback_user_ratings": cold_users,
-            "fallback_movie_ratings": cold_movies,
-            "fallback_rows": int((details["prediction_source"] != "SVD reconstruction").sum()),
-        },
-        "runtime_seconds": round(float(elapsed), 3),
-        "artifacts": [
-            str(MODEL_PATH),
-            str(REPORT_PATH),
-            str(EVALUATION_PATH),
-        ],
-    }, details
-
-
-def load_saved_model():
+def load_model():
     if MODEL_PATH.exists():
         try:
             return MovieRecommender.load(MODEL_PATH)
-        except Exception as exc:
-            st.sidebar.warning(f"مدل ذخیره‌شده بارگذاری نشد: {exc}")
+        except Exception:
+            return None
     return None
 
 
+def load_test_ratings():
+    if TEST_PATH.exists():
+        try:
+            frame = pd.read_csv(TEST_PATH)
+            frame["user_id"] = frame["user_id"].astype(str)
+            frame["movie_title"] = frame["movie_title"].astype(str)
+            frame["user_rating"] = pd.to_numeric(frame["user_rating"])
+            return frame
+        except (OSError, ValueError, pd.errors.ParserError):
+            return None
+    return None
+
+
+def predict_rating(model, user_id, movie_title):
+    if (
+        user_id in model.predicted_ratings.index
+        and movie_title in model.predicted_ratings.columns
+    ):
+        return float(model.predicted_ratings.loc[user_id, movie_title]), "پیش‌بینی SVD"
+    return float(model.global_mean), "میانگین آموزش (جایگزین)"
+
+
 if "model" not in st.session_state:
-    st.session_state.model = load_saved_model()
-if "report" not in st.session_state:
+    st.session_state.model = load_model()
+if "test_ratings" not in st.session_state:
+    st.session_state.test_ratings = load_test_ratings()
+if "training_summary" not in st.session_state:
     try:
-        st.session_state.report = (
-            json.loads(REPORT_PATH.read_text(encoding="utf-8"))
-            if REPORT_PATH.exists() else None
+        st.session_state.training_summary = (
+            json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
+            if SUMMARY_PATH.exists() else None
         )
     except (OSError, json.JSONDecodeError):
-        st.session_state.report = None
-if "evaluation_details" not in st.session_state:
-    try:
-        st.session_state.evaluation_details = (
-            pd.read_csv(EVALUATION_PATH)
-            if EVALUATION_PATH.exists() else None
-        )
-    except (OSError, pd.errors.ParserError):
-        st.session_state.evaluation_details = None
-if "ratings" not in st.session_state:
-    st.session_state.ratings = None
-if "recommendations" not in st.session_state:
-    st.session_state.recommendations = None
+        st.session_state.training_summary = None
 
 model = st.session_state.model
-report = st.session_state.report
+summary = st.session_state.training_summary
 
 st.markdown(
     """
     <div class="hero">
-      <div class="eyebrow">MACHINE LEARNING • COLLABORATIVE FILTERING</div>
       <h1>🎬 MovieMind AI</h1>
-      <p>آزمایشگاه تحلیل، آموزش و ارزیابی سیستم پیشنهاددهنده فیلم بر پایه MovieLens 100K</p>
+      <p>آموزش مدل پیشنهاددهنده و نمایش عملی شخصی‌سازی برای یک کاربر</p>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-with st.sidebar:
-    st.title("MovieMind AI")
-    st.caption("کنترل پنل سامانه")
-    st.divider()
-    st.markdown("**وضعیت مدل**")
-    if model is not None:
-        st.success("مدل آموزش‌دیده بارگذاری شده")
-    else:
-        st.warning("مدلی در دسترس نیست")
-    if report:
-        st.caption(f"آخرین آموزش: {report['created_at']}")
-        st.caption(f"زمان آموزش: {report['runtime_seconds']} ثانیه")
-    st.divider()
-    st.markdown("**پیکربندی فعلی**")
-    st.caption("الگوریتم: TruncatedSVD")
-    st.caption("تقسیم داده: ۵۰٪ / ۵۰٪")
-    st.caption("بذر تصادفی: ۴۲")
-    st.caption("دیتاست: MovieLens 100K")
-    st.divider()
-    if st.button("بارگذاری مجدد مدل ذخیره‌شده", use_container_width=True):
-        st.session_state.model = load_saved_model()
-        st.rerun()
+if model is not None:
+    st.success("مدل آموزش‌دیده آماده استفاده است.")
+else:
+    st.warning("برای شروع، ابتدا مدل را در بخش «آموزش مدل» آموزش دهید.")
 
-tab_overview, tab_data, tab_train, tab_recommend, tab_outputs = st.tabs(
-    ["نمای کلی", "شناخت داده", "آموزش و ارزیابی", "پیشنهاد شخصی", "گزارش‌ها و خروجی‌ها"]
-)
+train_tab, demo_tab = st.tabs(["۱. آموزش مدل", "۲. آزمایش شخصی‌سازی برای یک کاربر"])
 
-with tab_overview:
-    st.subheader("نمای کلی سامانه")
-    if report:
-        ds = report["dataset"]
-        ev = report["evaluation"]
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("امتیازهای دیتاست", f"{ds['ratings']:,}")
-        c2.metric("کاربران", f"{ds['users']:,}")
-        c3.metric("فیلم‌ها", f"{ds['movies']:,}")
-        c4.metric("میانگین امتیاز", f"{ds['rating_mean']:.2f} / 5")
-        st.subheader("آخرین نتیجه ارزیابی")
-        a, b, c = st.columns(3)
-        a.metric("RMSE", f"{ev['rmse']:.4f}", help="ریشه میانگین مربعات خطا؛ کمتر بهتر است.")
-        b.metric("MAE", f"{ev['mae']:.4f}", help="میانگین قدرمطلق خطا؛ کمتر بهتر است.")
-        c.metric("نمونه‌های آزمون", f"{ev['test_count']:,}")
-        st.caption(
-            f"مدل با {report['model']['used_components']} مؤلفه آموزش دیده؛ "
-            f"زمان کل فرایند {report['runtime_seconds']} ثانیه بوده است."
-        )
-    else:
-        st.info("هنوز گزارشی از آموزش در این نشست وجود ندارد. برای ساخت گزارش، آموزش مدل را اجرا کنید.")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("الگوریتم", "SVD")
-        c2.metric("نسبت آموزش", "۵۰٪")
-        c3.metric("نسبت آزمون", "۵۰٪")
+with train_tab:
+    st.subheader("آموزش مدل پیشنهاد فیلم")
+    st.write(
+        "برای آماده‌سازی سیستم فقط یک کار لازم است: دکمه زیر را بزنید. "
+        "برنامه داده‌ها را دریافت می‌کند، آن‌ها را نصف می‌کند، مدل SVD را آموزش می‌دهد "
+        "و نتیجه را ذخیره می‌کند."
+    )
 
-    st.subheader("جریان پردازش")
-    flow = [
-        ("۱", "دریافت داده", "خواندن رکوردهای امتیازدهی MovieLens"),
-        ("۲", "آماده‌سازی", "پاک‌سازی و تقسیم تصادفی با بذر ثابت ۴۲"),
-        ("۳", "ساخت ماتریس", "کاربر × فیلم و تکمیل خانه‌های خالی با میانگین کاربر"),
-        ("۴", "یادگیری SVD", "استخراج عوامل نهفته و بازسازی امتیازها"),
-        ("۵", "ارزیابی", "محاسبه RMSE و MAE روی داده‌های کنارگذاشته‌شده"),
-        ("۶", "پیشنهاد", "مرتب‌سازی فیلم‌های امتیازنداده‌شده برای هر کاربر"),
-    ]
-    for number, heading, description in flow:
-        with st.container(border=True):
-            x, y = st.columns([1, 8])
-            x.markdown(f"### {number}")
-            y.markdown(f"**{heading}**")
-            y.caption(description)
+    st.markdown("**تنظیمات ثابت پروژه**")
+    p1, p2, p3 = st.columns(3)
+    p1.metric("دیتاست", "MovieLens 100K")
+    p2.metric("تقسیم داده", "۵۰٪ آموزش / ۵۰٪ آزمون")
+    p3.metric("الگوریتم", "SVD با ۲۰ مؤلفه")
 
-with tab_data:
-    st.subheader("شناخت و کیفیت داده")
-    if st.session_state.ratings is None and st.button("بارگذاری دیتاست و نمایش جزئیات", type="primary"):
-        try:
-            with st.spinner("در حال دریافت یا خواندن MovieLens 100K..."):
-                st.session_state.ratings = get_ratings()
-        except Exception as exc:
-            st.error(f"بارگذاری دیتاست ناموفق بود: {exc}")
-    ratings = st.session_state.ratings
-    if ratings is not None:
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("تعداد رکورد", f"{len(ratings):,}")
-        c2.metric("کاربر یکتا", f"{ratings['user_id'].nunique():,}")
-        c3.metric("فیلم یکتا", f"{ratings['movie_title'].nunique():,}")
-        c4.metric("میانگین امتیاز", f"{ratings['user_rating'].mean():.3f}")
-        st.markdown("**توزیع امتیازهای ثبت‌شده**")
-        rating_dist = ratings["user_rating"].value_counts().sort_index()
-        st.bar_chart(rating_dist.rename_axis("امتیاز").to_frame("تعداد رکورد"))
-        left, right = st.columns(2)
-        with left:
-            st.markdown("**کاربران با بیشترین تعداد امتیاز**")
-            active = ratings.groupby("user_id").size().nlargest(10).rename("تعداد امتیاز")
-            st.dataframe(active, use_container_width=True)
-        with right:
-            st.markdown("**فیلم‌های با بیشترین تعداد امتیاز**")
-            popular = ratings.groupby("movie_title").size().nlargest(10).rename("تعداد امتیاز")
-            st.dataframe(popular, use_container_width=True)
-        with st.expander("مشاهده نمونه رکوردهای دیتاست"):
-            st.dataframe(ratings.head(30), use_container_width=True)
-        st.download_button(
-            "دریافت داده‌های بارگذاری‌شده (CSV)",
-            ratings.to_csv(index=False).encode("utf-8-sig"),
-            "movielens_loaded_ratings.csv",
-            "text/csv",
-        )
-    else:
-        st.caption("برای جلوگیری از دانلود ناخواسته، بارگذاری دیتاست با دکمه بالا انجام می‌شود.")
-
-with tab_train:
-    st.subheader("مرکز آموزش مدل")
-    st.write("پارامترها را انتخاب کنید، فرایند را اجرا کنید و جزئیات هر مرحله را بررسی کنید.")
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        components = st.slider("تعداد مؤلفه‌های نهفته SVD", 5, 50, 20, 1)
-    with col_b:
-        split_ratio = st.selectbox("سهم داده آزمون", ["۵۰٪ (پیشنهادی و ثابت پروژه)"], index=0)
-        st.caption("نسبت آموزش نیز ۵۰٪ خواهد بود.")
-    with col_c:
-        st.metric("بذر تصادفی", "42")
-        st.caption("برای تکرارپذیری تقسیم داده")
-
-    with st.expander("SVD چه کاری انجام می‌دهد؟", expanded=False):
-        st.markdown(
-            "ابتدا ماتریس کاربر–فیلم ساخته می‌شود. خانه‌های خالی با میانگین امتیاز همان کاربر تکمیل می‌شوند. "
-            "سپس SVD الگوهای نهفته را استخراج می‌کند و ماتریس امتیازهای تخمینی را بازسازی می‌کند. "
-            "این مدل امتیاز احتمالی را تخمین می‌زند؛ خروجی آن احتمال علاقه یا تضمین پسندیدن فیلم نیست."
-        )
-
-    if st.button("▶ شروع آموزش کامل", type="primary", use_container_width=True):
-        started = perf_counter()
-        progress = st.progress(0, text="مرحله ۱ از ۵: بارگذاری دیتاست")
+    if st.button("شروع آموزش مدل", type="primary", use_container_width=True):
+        start = perf_counter()
+        progress = st.progress(0, text="مرحله ۱ از ۴ — دریافت داده‌ها")
         status = st.empty()
         try:
-            status.info("در حال دریافت و آماده‌سازی داده‌های MovieLens 100K...")
+            status.info("در حال دریافت MovieLens 100K؛ در اجرای اول ممکن است دانلود انجام شود.")
             ratings = get_ratings()
-            st.session_state.ratings = ratings
-            progress.progress(15, text="مرحله ۱ از ۵: دیتاست آماده شد")
-            status.success(
-                f"{len(ratings):,} امتیاز از {ratings['user_id'].nunique():,} کاربر "
-                f"و {ratings['movie_title'].nunique():,} فیلم بارگذاری شد."
-            )
+            progress.progress(20, text="مرحله ۱ از ۴ — داده‌ها آماده شد")
 
             train_data, test_data = split_ratings(ratings, test_size=0.5)
-            progress.progress(30, text="مرحله ۲ از ۵: تقسیم آموزش و آزمون")
             status.info(
-                f"آموزش: {len(train_data):,} رکورد | آزمون: {len(test_data):,} رکورد"
+                f"مرحله ۲ از ۴ — تقسیم داده انجام شد: "
+                f"{len(train_data):,} رکورد آموزش و {len(test_data):,} رکورد آزمون."
             )
+            progress.progress(40, text="مرحله ۲ از ۴ — تقسیم داده‌ها")
 
-            status.info("مرحله ۳ از ۵: ساخت ماتریس کاربر–فیلم و آموزش SVD...")
-            trained_model = MovieRecommender(n_components=components).fit(train_data)
-            progress.progress(70, text="مرحله ۳ از ۵: آموزش مدل کامل شد")
+            status.info("مرحله ۳ از ۴ — مدل SVD در حال یادگیری الگوهای کاربران و فیلم‌هاست.")
+            trained_model = MovieRecommender(n_components=N_COMPONENTS).fit(train_data)
+            progress.progress(75, text="مرحله ۳ از ۴ — آموزش مدل تمام شد")
 
-            status.info("مرحله ۴ از ۵: پیش‌بینی و محاسبه معیارهای ارزیابی...")
+            status.info("مرحله ۴ از ۴ — محاسبه دقت روی داده‌هایی که مدل ندیده است.")
             metrics = trained_model.evaluate(test_data)
-            elapsed_before_save = perf_counter() - started
-            report_data, details = build_report(
-                ratings, train_data, test_data, trained_model, metrics, elapsed_before_save
-            )
-            progress.progress(88, text="مرحله ۴ از ۵: ارزیابی کامل شد")
-
             ARTIFACTS.mkdir(parents=True, exist_ok=True)
             trained_model.save(MODEL_PATH)
-            details.to_csv(EVALUATION_PATH, index=False)
-            report_data["runtime_seconds"] = round(perf_counter() - started, 3)
-            report_data["created_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
-            REPORT_PATH.write_text(
-                json.dumps(report_data, ensure_ascii=False, indent=2),
+            test_data.to_csv(TEST_PATH, index=False)
+
+            elapsed = perf_counter() - start
+            new_summary = {
+                "ratings": int(len(ratings)),
+                "users": int(ratings["user_id"].nunique()),
+                "movies": int(ratings["movie_title"].nunique()),
+                "train_count": int(len(train_data)),
+                "test_count": int(len(test_data)),
+                "rmse": float(metrics["rmse"]),
+                "mae": float(metrics["mae"]),
+                "components": int(trained_model.model.n_components),
+                "elapsed_seconds": round(elapsed, 2),
+            }
+            SUMMARY_PATH.write_text(
+                json.dumps(new_summary, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            progress.progress(100, text="مرحله ۵ از ۵: ذخیره مدل و گزارش‌ها کامل شد")
 
             st.session_state.model = trained_model
-            st.session_state.report = report_data
-            st.session_state.evaluation_details = details
-            st.session_state.recommendations = None
-            status.success("آموزش، ارزیابی و ذخیره خروجی‌ها با موفقیت انجام شد.")
+            st.session_state.test_ratings = test_data.reset_index(drop=True)
+            st.session_state.training_summary = new_summary
+            progress.progress(100, text="آموزش کامل شد")
+            status.success("مدل آموزش داده شد و فایل‌های لازم برای آزمایش کاربر ذخیره شدند.")
             st.rerun()
         except Exception as exc:
-            status.error(f"آموزش در یکی از مراحل متوقف شد: {exc}")
+            status.error(f"آموزش انجام نشد: {exc}")
             st.exception(exc)
 
-    if st.session_state.report:
-        report = st.session_state.report
+    if summary:
         st.divider()
-        st.subheader("گزارش اجرای آموزش")
-        ev = report["evaluation"]
-        md = report["model"]
-        x1, x2, x3, x4 = st.columns(4)
-        x1.metric("RMSE", f"{ev['rmse']:.4f}")
-        x2.metric("MAE", f"{ev['mae']:.4f}")
-        x3.metric("زمان اجرا", f"{report['runtime_seconds']:.2f} ثانیه")
-        x4.metric("واریانس توضیح‌داده‌شده", f"{(md['explained_variance_ratio_sum'] or 0) * 100:.2f}%")
-        st.markdown("**جزئیات داده و مدل**")
-        details_rows = [
-            ("کل امتیازها", f"{report['dataset']['ratings']:,}"),
-            ("رکوردهای آموزش", f"{report['split']['train_ratings']:,}"),
-            ("رکوردهای آزمون", f"{report['split']['test_ratings']:,}"),
-            ("ابعاد ماتریس کاربر–فیلم", f"{md['matrix_users']:,} × {md['matrix_movies']:,}"),
-            ("تعداد مؤلفه‌های استفاده‌شده", str(md["used_components"])),
-            ("تراکم ماتریس مشاهده‌شده", f"{md['matrix_density'] * 100:.2f}%"),
-            ("میانگین سراسری آموزش", f"{md['global_mean']:.4f}"),
-            ("پیش‌بینی با میانگین سراسری", f"{ev['fallback_rows']:,} رکورد"),
-        ]
-        st.dataframe(
-            pd.DataFrame(details_rows, columns=["شاخص", "مقدار"]),
-            hide_index=True, use_container_width=True,
-        )
+        st.subheader("نتیجه آخرین آموزش")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("RMSE", f"{summary['rmse']:.4f}")
+        r2.metric("MAE", f"{summary['mae']:.4f}")
+        r3.metric("زمان آموزش", f"{summary['elapsed_seconds']:.1f} ثانیه")
+        r4.metric("رکوردهای آزمون", f"{summary['test_count']:,}")
         st.caption(
-            "نکته ارزیابی: رکوردهایی که کاربر یا فیلم آن‌ها در ماتریس آموزش حضور نداشته، "
-            "با میانگین سراسری آموزش پیش‌بینی شده‌اند؛ این پیش‌بینی شخصی‌سازی‌شده نیست."
+            f"از {summary['ratings']:,} امتیاز کل، {summary['train_count']:,} امتیاز برای آموزش "
+            f"و {summary['test_count']:,} امتیاز برای آزمون کنار گذاشته شد."
         )
+        with st.expander("توضیح کوتاه معیارها"):
+            st.write(
+                "**RMSE:** خطای پیش‌بینی را با جریمه بیشتر برای خطاهای بزرگ نشان می‌دهد. "
+                "**MAE:** میانگین فاصله امتیاز پیش‌بینی‌شده تا امتیاز واقعی است. "
+                "در هر دو معیار مقدار کمتر بهتر است."
+            )
 
-with tab_recommend:
-    st.subheader("تولید پیشنهادهای شخصی‌سازی‌شده")
+with demo_tab:
+    st.subheader("آزمایش شخصی‌سازی برای یک کاربر")
+    st.write(
+        "یک کاربر انتخاب کنید. سیستم ابتدا سلیقه او را از امتیازهای بخش آموزش می‌خواند؛ "
+        "سپس امتیازهای کنارگذاشته‌شده همان کاربر را پیش‌بینی می‌کند و فیلم‌های جدید پیشنهاد می‌دهد."
+    )
+
     model = st.session_state.model
+    test_data = st.session_state.test_ratings
+
     if model is None or model.user_item is None:
-        st.warning("ابتدا مدل را در بخش آموزش و ارزیابی آموزش دهید.")
+        st.info("ابتدا از بخش «آموزش مدل» مدل را آموزش دهید.")
     else:
-        users = sorted(model.user_item.index.astype(str).tolist())
-        ucol, ncol = st.columns([2, 1])
-        with ucol:
-            selected_user = st.selectbox("انتخاب شناسه کاربر", users)
-        with ncol:
-            top_n = st.selectbox("تعداد فیلم پیشنهادی", [5, 10, 15, 20, 30], index=1)
-        user_ratings = model.user_item.loc[selected_user].dropna().sort_values(ascending=False)
-        p1, p2, p3 = st.columns(3)
-        p1.metric("فیلم‌های امتیازداده‌شده در آموزش", f"{len(user_ratings):,}")
-        p2.metric("میانگین امتیاز کاربر", f"{user_ratings.mean():.2f}" if len(user_ratings) else "—")
-        p3.metric("فیلم‌های قابل پیشنهاد", f"{len(model.predicted_ratings.columns) - len(user_ratings):,}")
+        available_users = set(model.user_item.index.astype(str))
+        if test_data is not None:
+            test_users = set(test_data["user_id"].astype(str))
+            demo_users = sorted(available_users.intersection(test_users))
+        else:
+            demo_users = sorted(available_users)
 
-        if st.button("ساخت پیشنهادها برای این کاربر", type="primary", use_container_width=True):
-            try:
-                st.session_state.recommendations = recommend_movies(model, selected_user, top_n)
-                st.session_state.recommendation_user = selected_user
-            except Exception as exc:
-                st.error(f"تولید پیشنهاد ناموفق بود: {exc}")
+        if not demo_users:
+            st.warning("کاربری برای آزمایش پیدا نشد. آموزش مدل را دوباره اجرا کنید.")
+        else:
+            if test_data is not None:
+                test_counts = test_data[test_data["user_id"].isin(demo_users)].groupby("user_id").size()
+                default_user = str(test_counts.idxmax()) if not test_counts.empty else demo_users[0]
+            else:
+                train_counts = model.user_item.notna().sum(axis=1)
+                default_user = str(train_counts.idxmax())
 
-        result = st.session_state.recommendations
-        if result is not None and st.session_state.get("recommendation_user") == selected_user:
-            st.markdown("**رتبه‌بندی فیلم‌ها بر اساس امتیاز پیش‌بینی‌شده**")
-            shown = result.copy()
-            shown["predicted_rating"] = shown["predicted_rating"].round(3)
-            shown.index = range(1, len(shown) + 1)
-            st.dataframe(
-                shown.rename(columns={
-                    "user_id": "شناسه کاربر",
-                    "movie_title": "عنوان فیلم",
-                    "predicted_rating": "امتیاز تخمینی از ۵",
-                }),
-                use_container_width=True,
-            )
-            st.bar_chart(result.set_index("movie_title")["predicted_rating"])
-            st.caption(
-                "امتیاز تخمینی از بازسازی ماتریس SVD به دست آمده است؛ "
-                "این مقدار احتمال علاقه‌مندی یا امتیاز قطعی آینده کاربر نیست."
-            )
-            st.download_button(
-                "دانلود پیشنهادهای این کاربر (CSV)",
-                result.to_csv(index=False).encode("utf-8-sig"),
-                f"recommendations_user_{selected_user}.csv",
-                "text/csv",
-                use_container_width=True,
-            )
-        with st.expander("فیلم‌هایی که این کاربر در بخش آموزش امتیاز داده است"):
-            st.dataframe(
-                user_ratings.rename("امتیاز ثبت‌شده").to_frame(),
-                use_container_width=True,
+            selected_user = st.selectbox(
+                "شناسه کاربر برای نمایش",
+                demo_users,
+                index=demo_users.index(default_user),
             )
 
-with tab_outputs:
-    st.subheader("مرکز گزارش‌ها و فایل‌های خروجی")
-    st.write("فایل‌های زیر پس از اجرای موفق آموزش در پوشه artifacts ذخیره می‌شوند.")
-    if report:
-        st.success("گزارش آموزش در این نشست موجود است.")
-        report_json = json.dumps(report, ensure_ascii=False, indent=2)
-        st.download_button(
-            "دریافت گزارش کامل آموزش (JSON)",
-            report_json,
-            "training_report.json",
-            "application/json",
-            use_container_width=True,
-        )
-        details = st.session_state.evaluation_details
-        if details is not None:
-            st.markdown("**جزئیات پیش‌بینی تک‌تک رکوردهای آزمون**")
-            st.caption("شامل امتیاز واقعی، امتیاز پیش‌بینی‌شده، خطای مطلق و منبع پیش‌بینی.")
-            st.download_button(
-                "دریافت جزئیات ارزیابی (CSV)",
-                details.to_csv(index=False).encode("utf-8-sig"),
-                "evaluation_predictions.csv",
-                "text/csv",
-                use_container_width=True,
-            )
-            with st.expander("پیش‌نمایش ۵۰ پیش‌بینی آزمون"):
-                preview = details.head(50).copy()
-                for col in ["actual_rating", "predicted_rating", "absolute_error"]:
-                    preview[col] = preview[col].round(3)
-                st.dataframe(preview, use_container_width=True)
-            st.markdown("**توزیع خطای مطلق در داده آزمون**")
-            bins = pd.cut(
-                details["absolute_error"],
-                bins=[-0.001, 0.25, 0.5, 1.0, 1.5, 2.0, 5.0],
-                labels=["۰ تا ۰٫۲۵", "۰٫۲۵ تا ۰٫۵", "۰٫۵ تا ۱", "۱ تا ۱٫۵", "۱٫۵ تا ۲", "بیشتر از ۲"],
-            )
-            st.bar_chart(bins.value_counts(sort=False).rename("تعداد رکورد"))
-        st.markdown("**فایل‌های ذخیره‌شده روی سیستم**")
-        for path in [MODEL_PATH, REPORT_PATH, EVALUATION_PATH]:
-            st.write(f"{'✅' if path.exists() else '—'}  `{path}`")
-    else:
-        st.info("هنوز خروجی آموزشی تولید نشده است. ابتدا آموزش مدل را اجرا کنید.")
+            history = model.user_item.loc[selected_user].dropna().sort_values(ascending=False)
+            rated_titles = set(history.index.astype(str))
+            h1, h2, h3 = st.columns(3)
+            h1.metric("تعداد فیلم‌های شناخته‌شده", f"{len(history):,}")
+            h2.metric("میانگین امتیازهای کاربر", f"{history.mean():.2f} از ۵")
+            h3.metric("فیلم‌های قابل پیشنهاد", f"{len(model.predicted_ratings.columns) - len(rated_titles):,}")
+
+            st.markdown("#### سلیقه‌ای که مدل از کاربر یاد گرفته است")
+            liked = history[history >= 4.0].head(8)
+            disliked = history[history <= 2.0].head(5)
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**فیلم‌هایی که امتیاز بالا گرفته‌اند**")
+                if liked.empty:
+                    st.caption("در داده‌های آموزش این کاربر امتیاز ۴ یا بالاتر ثبت نشده است.")
+                else:
+                    liked_view = liked.rename("امتیاز کاربر").to_frame()
+                    st.dataframe(liked_view, use_container_width=True)
+            with right:
+                st.markdown("**فیلم‌هایی که امتیاز پایین گرفته‌اند**")
+                if disliked.empty:
+                    st.caption("در داده‌های آموزش این کاربر امتیاز ۲ یا پایین‌تر ثبت نشده است.")
+                else:
+                    disliked_view = disliked.rename("امتیاز کاربر").to_frame()
+                    st.dataframe(disliked_view, use_container_width=True)
+
+            st.markdown("#### آزمون روی فیلم‌هایی که از آموزش کنار گذاشته شده‌اند")
+            if test_data is None:
+                st.warning("فایل داده آزمون ذخیره نشده است. یک بار دیگر آموزش را اجرا کنید تا آزمون شخصی‌سازی فعال شود.")
+            else:
+                user_test = test_data[test_data["user_id"].astype(str) == selected_user].copy()
+                if user_test.empty:
+                    st.info("برای این کاربر رکورد آزمون موجود نیست.")
+                else:
+                    actual_values = []
+                    predicted_values = []
+                    sources = []
+                    for row in user_test.itertuples(index=False):
+                        prediction, source = predict_rating(model, selected_user, row.movie_title)
+                        actual_values.append(float(row.user_rating))
+                        predicted_values.append(prediction)
+                        sources.append(source)
+
+                    user_test["امتیاز واقعی"] = actual_values
+                    user_test["امتیاز پیش‌بینی‌شده"] = predicted_values
+                    user_test["خطای مطلق"] = np.abs(
+                        user_test["امتیاز واقعی"] - user_test["امتیاز پیش‌بینی‌شده"]
+                    )
+                    user_test["روش پیش‌بینی"] = sources
+                    user_rmse = float(np.sqrt(np.mean(
+                        (user_test["امتیاز واقعی"] - user_test["امتیاز پیش‌بینی‌شده"]) ** 2
+                    )))
+                    user_mae = float(user_test["خطای مطلق"].mean())
+
+                    e1, e2, e3 = st.columns(3)
+                    e1.metric("تعداد امتیازهای آزمون کاربر", f"{len(user_test):,}")
+                    e2.metric("RMSE این کاربر", f"{user_rmse:.3f}")
+                    e3.metric("MAE این کاربر", f"{user_mae:.3f}")
+                    st.dataframe(
+                        user_test[[
+                            "movie_title", "امتیاز واقعی", "امتیاز پیش‌بینی‌شده",
+                            "خطای مطلق", "روش پیش‌بینی"
+                        ]].rename(columns={"movie_title": "فیلم"}),
+                        hide_index=True,
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        "امتیاز واقعی این جدول هنگام آموزش در اختیار مدل نبوده است. "
+                        "پس از آموزش، پیش‌بینی مدل با امتیاز واقعی مقایسه می‌شود."
+                    )
+                    st.download_button(
+                        "دریافت نتیجه آزمون این کاربر (CSV)",
+                        user_test.to_csv(index=False).encode("utf-8-sig"),
+                        f"user_{selected_user}_heldout_test.csv",
+                        "text/csv",
+                    )
+
+            st.markdown("#### فیلم‌هایی که سیستم به این کاربر پیشنهاد می‌دهد")
+            if st.button("تولید پیشنهادهای شخصی این کاربر", type="primary", use_container_width=True):
+                try:
+                    st.session_state.demo_recommendations = recommend_movies(
+                        model, selected_user, top_n=10
+                    )
+                    st.session_state.demo_recommendation_user = selected_user
+                except Exception as exc:
+                    st.error(f"تولید پیشنهاد ناموفق بود: {exc}")
+
+            recommendations = st.session_state.get("demo_recommendations")
+            if (
+                recommendations is not None
+                and st.session_state.get("demo_recommendation_user") == selected_user
+            ):
+                display = recommendations.copy()
+                display["predicted_rating"] = display["predicted_rating"].round(2)
+                display.index = range(1, len(display) + 1)
+                st.dataframe(
+                    display.rename(columns={
+                        "movie_title": "فیلم پیشنهادی",
+                        "predicted_rating": "امتیاز تخمینی از ۵",
+                        "user_id": "شناسه کاربر",
+                    }),
+                    use_container_width=True,
+                )
+                st.bar_chart(
+                    recommendations.set_index("movie_title")["predicted_rating"]
+                )
+                st.download_button(
+                    "دریافت فهرست پیشنهادها (CSV)",
+                    recommendations.to_csv(index=False).encode("utf-8-sig"),
+                    f"user_{selected_user}_recommendations.csv",
+                    "text/csv",
+                )
+                st.caption(
+                    "فیلم‌های امتیازداده‌شده در بخش آموزش از پیشنهادها حذف شده‌اند. "
+                    "امتیاز تخمینی، خروجی مدل است و تضمین علاقه‌مندی واقعی کاربر نیست."
+                )
 
 st.divider()
-st.caption("MovieMind AI • SVD Collaborative Filtering • MovieLens 100K")
+st.caption("MovieMind AI | MovieLens 100K | TruncatedSVD")
