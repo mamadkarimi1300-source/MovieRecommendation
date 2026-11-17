@@ -84,8 +84,10 @@ class MovieRecommender:
         return joblib.load(path)
 
 
-def split_ratings(ratings: pd.DataFrame, test_size: float = 0.2):
-    """Create reproducible training and test sets."""
+def split_ratings(ratings: pd.DataFrame, test_size: float = 0.5):
+    """Create reproducible 50/50 training and test sets by default."""
+    if not 0 < test_size < 1:
+        raise ValueError("test_size must be between 0 and 1.")
     return train_test_split(
         ratings, test_size=test_size, random_state=42
     )
