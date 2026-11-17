@@ -91,7 +91,19 @@ st.markdown(
       .page-heading small { opacity:.62; font-weight:700; letter-spacing:.08em; }
       .chart-heading { font-size:1.02rem; font-weight:800; margin:.4rem 0 .2rem; }
       .muted { opacity:.68; font-size:.88rem; }
-      .brand { box-shadow: 0 12px 32px rgba(15,23,42,.12); }
+      .brand { box-shadow: 0 14px 36px rgba(15,23,42,.16); position:relative; overflow:hidden; }
+      .brand:after { content:' '; position:absolute; width:230px; height:230px; left:-65px; top:-125px; border:1px solid rgba(255,255,255,.13); border-radius:50%; box-shadow:0 0 0 24px rgba(255,255,255,.035),0 0 0 50px rgba(255,255,255,.025); }
+      .brand p { max-width:760px; line-height:1.9; }
+      [data-testid="stSidebar"] [data-testid="stRadio"] label { transition:background .18s ease,border-color .18s ease; }
+      [data-testid="stSidebar"] [data-testid="stRadio"] label:hover { border-color:rgba(59,130,246,.55); background:rgba(59,130,246,.07); }
+      [data-testid="stSidebar"] [data-testid="stRadio"] label:has(input:checked) { border-color:rgba(59,130,246,.7); background:rgba(59,130,246,.11); }
+      .overview-card { background:var(--secondary-background-color); border:1px solid rgba(128,128,128,.18); border-radius:15px; padding: .85rem 1rem; min-height:94px; }
+      .overview-label { font-size:.78rem; opacity:.68; font-weight:700; margin-bottom:.45rem; }
+      .overview-value { font-size:1.35rem; font-weight:800; line-height:1.45; direction:rtl; }
+      .overview-note { font-size:.76rem; opacity:.58; margin-top:.15rem; }
+      .section-kicker { letter-spacing:.04em; }
+      [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] { align-items:stretch; }
+      [data-testid="stMetricDelta"] { direction:rtl; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -164,6 +176,29 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# خلاصه وضعیت از خروجی‌های واقعی موجود در نشست و آخرین آموزش
+current_events = st.session_state.get("simulation_events", [])
+trained_users = summary.get("users", 0) if summary else 0
+rmse_value = f"{summary['rmse']:.4f}" if summary else "—"
+model_state = "آماده" if model is not None else "آموزش‌داده‌نشده"
+
+st.markdown('<div class="section-kicker">نمای کلی سامانه</div>', unsafe_allow_html=True)
+overview_cols = st.columns(4)
+overview_items = [
+    ("وضعیت موتور پیشنهاد", model_state, "مدل SVD"),
+    ("خطای آخرین آموزش", rmse_value, "RMSE · داده آزمون"),
+    ("کاربران آموزش", f"{trained_users:,}", "MovieLens · آخرین آموزش" if summary else "هنوز داده‌ای ثبت نشده"),
+    ("رویدادهای شبیه‌سازی", f"{len(current_events):,}", "رویدادهای همین نشست"),
+]
+for col, (label, value, note) in zip(overview_cols, overview_items):
+    with col:
+        st.markdown(
+            f'<div class="overview-card"><div class="overview-label">{label}</div>'
+            f'<div class="overview-value">{value}</div><div class="overview-note">{note}</div></div>',
+            unsafe_allow_html=True,
+        )
+st.write("")
 
 with st.sidebar:
     st.markdown("## MovieMind AI")
