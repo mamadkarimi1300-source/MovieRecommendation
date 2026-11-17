@@ -18,15 +18,19 @@ def train_model():
           f"{ratings['user_id'].nunique():,} users and "
           f"{ratings['movie_title'].nunique():,} movies.")
 
-    train_data, test_data = split_ratings(ratings)
-    print("Training SVD recommendation model...")
+    train_data, test_data = split_ratings(ratings, test_size=0.5)
+    print("\nData split")
+    print(f"Training ratings: {len(train_data):,} (50%)")
+    print(f"Testing ratings:  {len(test_data):,} (50%)")
+
+    print("\nTraining SVD recommendation model...")
     model = MovieRecommender(n_components=20).fit(train_data)
 
     metrics = model.evaluate(test_data)
-    print("\nEvaluation")
+    print("\nEvaluation on unseen test ratings")
     print(f"RMSE: {metrics['rmse']:.4f}")
     print(f"MAE:  {metrics['mae']:.4f}")
-    print(f"Test ratings: {metrics['test_count']:,}")
+    print(f"Test ratings evaluated: {metrics['test_count']:,}")
 
     model.save(MODEL_PATH)
     print(f"\nModel saved to: {MODEL_PATH}")
