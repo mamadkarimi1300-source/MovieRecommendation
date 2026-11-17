@@ -189,6 +189,8 @@ with train_tab:
             st.session_state.model = trained_model
             st.session_state.test_ratings = test_data.reset_index(drop=True)
             st.session_state.training_summary = new_summary
+            st.session_state.demo_recommendations = None
+            st.session_state.demo_recommendation_user = None
             progress.progress(100, text="آموزش کامل شد")
             status.success("مدل آموزش داده شد و فایل‌های لازم برای آزمایش کاربر ذخیره شدند.")
             st.rerun()
