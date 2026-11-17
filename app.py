@@ -158,9 +158,21 @@ def load_saved_model():
 if "model" not in st.session_state:
     st.session_state.model = load_saved_model()
 if "report" not in st.session_state:
-    st.session_state.report = None
+    try:
+        st.session_state.report = (
+            json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+            if REPORT_PATH.exists() else None
+        )
+    except (OSError, json.JSONDecodeError):
+        st.session_state.report = None
 if "evaluation_details" not in st.session_state:
-    st.session_state.evaluation_details = None
+    try:
+        st.session_state.evaluation_details = (
+            pd.read_csv(EVALUATION_PATH)
+            if EVALUATION_PATH.exists() else None
+        )
+    except (OSError, pd.errors.ParserError):
+        st.session_state.evaluation_details = None
 if "ratings" not in st.session_state:
     st.session_state.ratings = None
 if "recommendations" not in st.session_state:
