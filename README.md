@@ -7,8 +7,8 @@ A compact machine-learning movie recommender built with the MovieLens 100K ratin
 - Splits ratings into 50% training and 50% testing data (fixed random seed for reproducibility).
 - Trains an SVD collaborative-filtering model using training data only.
 - Evaluates predictions on held-out test ratings with RMSE and MAE.
-- Recommends the top 10 unseen movies for a selected user.
-- Exports recommendations to CSV.
+- Provides a Persian RTL Streamlit dashboard for training, evaluation, and recommendations.
+- Recommends unseen movies for a selected user and exports results to CSV.
 
 ## Setup
 
@@ -28,7 +28,15 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-## Run
+## Run the web UI (Windows)
+
+```powershell
+streamlit run app.py
+```
+
+Streamlit prints a local URL (usually http://localhost:8501) to open in your browser. Use the **Training & Evaluation** tab to download/load the dataset, train SVD, evaluate on the held-out 50% test split, and save the model. The **Movie Recommendations** tab uses the trained or saved model.
+
+## Run from the command line
 
 Train, evaluate on the 50% test split, and recommend for user 1:
 ```bash
@@ -65,6 +73,7 @@ MovieRecommendation/
 │   ├── model.py
 │   └── recommend.py
 ├── artifacts/
+├── app.py
 ├── main.py
 ├── requirements.txt
 └── README.md
